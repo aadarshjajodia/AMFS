@@ -1,0 +1,213 @@
+CSE 506 - Operating System. Fall 2015
+Homework Assignment Solution - 2.
+Name - Aadarsh Jajodia
+
+*OVERVIEW
+This assignment implements an anti-malware file system, called amfs, which
+prevents a file from being dislpayed if the file contains bad patterns
+which are present in a pattern.db file which is provided while mounting
+the file system.
+
+*FILES modified(M)/added(A)
+ 1) /usr/src/hw2-ajajodia/fs/amfs/dentry.c			A
+ 2) /usr/src/hw2-ajajodia/fs/amfs/file.c			A
+ 3) /usr/src/hw2-ajajodia/fs/amfs/main.c			A
+ 4) /usr/src/hw2-ajajodia/fs/amfs/super.c			A
+ 5) /usr/src/hw2-ajajodia/fs/amfs/inode.c			A
+ 6) /usr/src/hw2-ajajodia/fs/amfs/amfs.h			A
+ 7) /usr/src/hw2-ajajodia/fs/amfs/Kconfig			A
+ 8) /usr/src/hw2-ajajodia/fs/amfs/mmap.c			A
+ 9) /usr/src/hw2-ajajodia/fs/amfs/lookup.c			A
+ 10) /usr/src/hw2-ajajodia/fs/amfs/amfs.mod.c		A
+ 11) /usr/src/hw2-ajajodia/fs/amfs/amfsctl.c		A
+ 12) /usr/src/hw2-ajajodia/fs/amfs/amfsctl.h		A
+ 13) /usr/src/hw2-ajajodia/fs/amfs/Makefile			A
+ 14) /usr/src/hw2-ajajodia/fs/amfs/kernel.config	A
+ 15) /usr/src/hw2-ajajodia/fs/Kconfig				M
+ 16) /usr/src/hw2-ajajodia/fs/Makefile				M
+ 17) /usr/src/hw2-ajajodia/include/uapi/linux/magic.h	M
+
+*BUILD*
+We need to builf the user code using the following command.
+First we need to go to /usr/scr/hw2-ajajodia/fs/amfs directory
+Then run
+gcc amfsctl.c -o amfsctl
+
+This will generate the output file "amfsctl" which will be used to send
+IOCTL's to the kernel
+
+*USAGE
+We first need to mount our amfs file system using the mount command
+mount -t amfs -o pattdb=/mypatterns.db /some/lower/path /mnt/amfs
+
+Here /mypatterns.db is the file which contains the malicious patterns
+
+We can run the following ioctl commands to update the pattern.db
+./amfsctl -l /mnt/amfs					List the patterns
+./amfsctl -a "newpatt" /mnt/amfs		Add the pattern "newpatt"
+./amfsctl -r "oldpatt" /mnt/amfs		Remove the pattern "oldpatt"
+
+*USERLAND Changes
+At user level the user can use ioctl commands to list, add or delete
+the patterns.
+
+The pattern to add/delete is passed to the kernel using ioctl function.
+
+*KERNEL SPACE*
+To support the anit-malware functionalty we first need to add few extra
+information in the amfs_sb_info.
+We add these 3 extra info
+
+"pattern_file_name" - This is the name of the pattern db file.
+We store this in the superblock to make sure that when the user runs the ioctl
+command to add or delete a pattern, we need to update the pattern.db file
+with the correspoding changes.
+
+"pattern_version_number" - This is the current version of the pattern db file.
+The version of the pattern.db file changes everytime a pattern is added/deleted
+from the pattern_db via ioctl commamnd. This value is finally written into an EA
+of the pattern db file during the unmount call of the file system
+
+"patt_list" - This is the pattern linked list structure that we maintain inside
+the kernel. This structure uses the kernel's list structure "list_head"
+to create a linked list. This linked list contains the malicious patterns that
+we check for in the files that the user tries to create/read/rename
+
+*USAGE of Extended Attributes(EA's)*
+We maintain the following extended attributes in our working
+1) 	For the pattern.db file we maintain an extended attribute
+	"user.pattern_file_version_number" which stores the current version
+	of the pattern as an EA. The current version of pattern
+	is retrieved from the superblock structure "pattern_version_number"
+	and is written as an EA of the patterndb file when the file system is
+	unmounted and the value is also retrieved from the pattern.db file
+	during mount call
+2)	For any file that the user tries to access via read/write operations
+	we set an attribute "user.malicious" to mark file as bad
+3)	For any file that the user tries to access via read/write operations
+	we set an attribute "user.virus_file_version_number". This value is the
+	current version of the patterns which is retrieved from the
+	superblock structure "pattern_version_number" and is stored as an EA
+	in the file.
+
+*CHECK FOR FILE BEING GOOD/BAD*
+	A file is marked good only when the EA "user.malicious" is set
+	and the EA "user.virus_file_version_number" of the file
+	is same as the pattern version present in the superblock structure.
+
+*MARKING THE FILE AS BAD
+	When a file is found to be bad, the EA "user.malicious" is set on
+	the file and the current pattern version number retrieved from the
+	superblock structure "pattern_version_number" is also stored as an
+	EA in the file.
+
+*IOCTL WORKING*
+1)	List IOCTL - When the user wants a list of malicious patterns,
+	the pattern linked list stored in the superblock structure is
+	travered and each of the patterns are added one by one in a string
+	and finally this string is returned back to the user.
+2)	Add IOCTL - When the user wants to add a pattern, we take the pattern
+	provided by the user and add it as another node in the pattern linked
+	list of the super block structure. We now make use of "pattern_file_name"
+	stored in the superblock structure and open the pattern db file and add
+	this new pattern in the pattern db file.
+3)	Remove IOCTL - When the user wants to remove a pattern, we take the pattern
+	provided by the user and remove it from the pattern linked list of the
+	super block structre. We again open the pattern file using the same
+	"pattern_file_name" stored in the superblock structure and remove this
+	pattern from the pattern file.
+
+*WORKING*
+While mounting the file system, we specify the pattern db file.
+As soon as we read the pattern db file we populate our pattern linked list
+and store in the private pointer of the file system's superblock structure.
+We also store the file name in the superblock structre to allow changes to
+the pattern.db file when a pattern is added/deleted via IOCTL.
+
+*FILE OPERATIONS*
+The following file operations are handled in the implementation of amfs.
+
+1) File Read - When a file is read, first it is check for it being good/bad
+using the procedure mentioned above "CHECK FOR FILE BEING GOOD/BAD".
+If the file if found to be bad we return an error disallowing user to read this
+file. Else we scan through the patterns present in the pattern linked list.
+If any pattern is found we again folow the procedure MARKING THE FILE AS BAD
+described above and also return an error to the user disallowing a read on this
+file.
+
+2) File Write:
+	a) When a new file a written, is it compared through all the
+	   patterns present in the pattern.db file and if any pattern matches,
+	   we mark the file as bad using the procedure MARKING THE FILE AS BAD
+       Please note that we allow to write to succeed for the first time.
+	   The next time this file is opened for write(it would automatically
+	   be blocked because it would internally call vfs_read
+	b) When an existing file is opened for write, the file first goes through
+	   read system call to read the contents and the same checks as a) are
+	   applied to the file.
+3) File Rename:
+	Malcious File Rename is blocked using *CHECK FOR FILE BEING GOOD/BAD*
+4) Hard linking:
+	Hard linking a malicious file is also blocked using *CHECK FOR FILE
+	BEING GOOD/BAD*
+5) User can unlink or(rm) a malicious file using standard rm command.
+6) ls(directory lising)
+	For this we go through all the dentries in the directory and
+	*CHECK FOR FILE BEING GOOD/BAD*. If a file is bad we dont show that
+	file in the ls command.
+	One limitation of this design is that since the pattern_version number
+	in the file is only updated when we do a read/write operation on the file,
+	hence when a pattern is added or removed, although the version of the
+	pattern db gets updated, but the file is still on the previous version.
+	Hence ls will still show up the malicious file. Once we try to read/write
+	the file the version number would be updated and the next time we do an ls
+	of the directory, it will not show up. Since ls is supposed to be a very
+	fast operation hence picking each file from ls and running through the
+	patterns would be a very expensive operation.
+7)	For unlinking, user will have to provide the file name to unlink,
+	as ls will not show the file. Please note rm -rf * on the directory does
+	not remove the malicious file.
+8) Copying a file. cp <bad fle> will fail with error.
+
+*ASSUMPTIONS*
+- 	Total lenght of all the patterns is < 4K
+- 	For comparing patterns we are checking for substrings in the given text.
+	If the pattern is found at the boundary of a page, it is not handled in the
+	base version of this assignment.
+
+*EXTRA_CREDIT*
+
+2)
+The user should, #define EXTRA_CREDIT, for this part of the code to work.
+
+The reason why this implementation works is because the requirments mention
+that the pattern cannot be more than 256 bytes in size.
+To check the pattern across page boundaries, we use the inode->i_private
+structure. Whenever the number of bytes read is equal to the PAGE_SIZE
+the inode->i_private will always store the last 256 bytes of this buffer.
+Whenever the number of bytes read is less than PAGE_SIZE
+(this would only be the case of 1st page(if file size < PAGE_SIZE)
+or the last page) we concatenate the contents of the i_private of inode
+and the first 256 bytes of the current page and try to match the pattern
+in this string. If match is found then we have found a pattern across page
+boundaries and we mark the file as malicious.
+In case of write operation we dont allow write to succeed and return as failure.
+In case of read operation we allow the file to be read till the page where
+the file not malicious and further reads to the file are blocked.
+
+The tri state of a file is maintained using two xattributes of the file.
+The first one is "user.malicious" and the second one is
+"user.pattern_file_version_number". So by default a file is marked good.
+The file changes state to bad when both the "user.malicious" is set and
+the "user.pattern_file_version_number" matches. When the pattern version
+changes the file is by default marked as good because our condition for
+malicious files is that apart from file being marked bad, the pattern
+version should also match. Hence there is no need to explicitly marked
+it as good.
+
+Reference Links
+http://www.makelinux.net/ldd3/chp-11-sect-5
+http://isis.poly.edu/kulesh/stuff/src/klist/
+http://people.ee.ethz.ch/~arkeller/linux/multi/kernel_user_space_howto-4.html
+http://www.codeproject.com/Articles/444995/Driver-to-hide-files-in-Linux-OS#
+EcryptFS - fs/ecryptfs
